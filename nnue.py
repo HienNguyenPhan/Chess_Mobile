@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import chess
 
 class ClippedRelu(nn.Module):
     def forward(self, x):
@@ -54,3 +55,33 @@ class NNUE(nn.Module):
         psqt = (wpsqt_selected - bpsqt_selected) * (stm - 0.5)
 
         return output_selected + psqt
+    
+def get_feature_indices(board: chess.Board, perspective: bool) -> List[int]:
+    """HalfKAv2_hm feature indices with horizontal mirroring."""
+    own_color = perspective
+    own_king_sq = board.king(own_color)
+    if own_king_sq is None:
+        return []
+    file = own_king_sq % 8
+    if file < 4:  # Mirror if king on a-d files
+        board = board.mirror()
+        own_king_sq = own_king_sq ^ 7
+    indices = []
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece:
+            sq = sq ^ 7 if file < 4 else sq
+            color_idx = 0 if piece.color == own_color else 1
+            type_idx = piece.piece_type
+            bucket = 10 if type_idx == chess.KING else (type_idx - 1) * 2 + color_idx
+            idx = sq + (bucket + (own_king_sq % 32) * 11) * 64
+            indices.append(idx)
+    return indices
+
+def quantize_model(model, path="chess_nnue_quantized.pt"):
+    """Quantize model to int8 for inference."""
+    model = torch.quantization.quantize_dynamic(
+        model, {nn.Linear, FeatureTransformerSlice}, dtype=torch.qint8
+    )
+    torch.save(model.state_dict(), path)
+    return model
