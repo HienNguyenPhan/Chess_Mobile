@@ -1,12 +1,15 @@
 import chess
-import torch
 import random
 from typing import Tuple, List
-from nnue import NNUE, get_feature_indices
+from eval import evaluate_position, material_values
 
 # Zobrist hashing for transposition table
 zobrist_keys = [[random.getrandbits(64) for _ in range(12)] for _ in range(64)]
 transposition_table = {}  # {hash: {'eval': float, 'depth': int}}
+
+def clear_transposition_table():
+    """Clear the transposition table."""
+    transposition_table.clear()
 
 def zobrist_hash(board: chess.Board) -> int:
     h = 0
@@ -17,49 +20,19 @@ def zobrist_hash(board: chess.Board) -> int:
             h ^= zobrist_keys[sq][piece_idx]
     return h ^ (1 if board.turn == chess.BLACK else 0)
 
-# Load quantized model
-device = torch.device("cpu")  # CUDA for training, CPU for inference
-model = NNUE(input_dim=22528, ft_dim=2048, hidden=32, buckets=8)
-try:
-    state_dict = torch.load("chess_nnue_quantized.pt", map_location=device)
-    model.load_state_dict(state_dict)
-except FileNotFoundError:
-    raise Exception("Model file chess_nnue_quantized.pt not found.")
-model.eval()
-
-def evaluate_position(board: chess.Board) -> float:
-    """Evaluate position using NNUE."""
-    if board.is_checkmate():
-        return -32000.0 if board.turn == chess.WHITE else 32000.0
-    if board.is_stalemate() or board.is_insufficient_material():
-        return 0.0
-    
-    white_indices = get_feature_indices(board, chess.WHITE)
-    black_indices = get_feature_indices(board, chess.BLACK)
-    features_white = torch.zeros(22528, device=device, dtype=torch.float32)
-    features_black = torch.zeros(22528, device=device, dtype=torch.float32)
-    for idx in white_indices:
-        features_white[idx] = 1.0
-    for idx in black_indices:
-        features_black[idx] = 1.0
-    
-    stm = torch.tensor([1.0 if board.turn == chess.WHITE else 0.0], device=device)
-    piece_count = sum(1 for _ in board.piece_map())
-    piece_counts = torch.tensor([piece_count], device=device, dtype=torch.int64)
-    
-    with torch.no_grad():
-        eval_normalized = model(
-            features_white.unsqueeze(0),
-            features_black.unsqueeze(0),
-            stm,
-            piece_counts
-        ).item()
-    return eval_normalized * 600  # Denormalize to centipawns
-
 def generate_moves(board: chess.Board) -> List[chess.Move]:
     """Generate and sort moves for better pruning."""
     moves = list(board.legal_moves)
-    moves.sort(key=lambda m: board.piece_at(m.to_square).piece_type if board.is_capture(m) else 0, reverse=True)
+    print(f"Generated moves: {[str(m) for m in moves]}")  # Debug
+    if not moves:
+        print("No legal moves found")
+        return []
+    def move_priority(move):
+        if board.is_capture(move):
+            piece = board.piece_at(move.to_square)
+            return material_values.get(piece.piece_type, 0) if piece else 0
+        return -1
+    moves.sort(key=move_priority, reverse=True)
     return moves
 
 def quiescence(board: chess.Board, alpha: float, beta: float, max_depth: int = 3) -> float:
@@ -93,6 +66,9 @@ def minimax(board: chess.Board, depth: int, alpha: float, beta: float, maximizin
         return eval_score
     
     moves = generate_moves(board)
+    if not moves:
+        return evaluate_position(board)
+    
     if maximizing:
         max_eval = -float('inf')
         for move in moves:
@@ -120,15 +96,27 @@ def minimax(board: chess.Board, depth: int, alpha: float, beta: float, maximizin
 
 def get_best_move_and_eval(board: chess.Board, depth: int) -> Tuple[chess.Move, float]:
     """Find best move and evaluation."""
+    print(f"Board FEN: {board.fen()}")  # Debug
+    moves = generate_moves(board)
+    if not moves:
+        raise ValueError("No legal moves available")
+    
     best_move = None
     best_eval = -float('inf') if board.turn == chess.WHITE else float('inf')
-    for move in generate_moves(board):
+    for move in moves:
         board.push(move)
         eval_score = minimax(board, depth - 1, -float('inf'), float('inf'), board.turn != chess.WHITE)
         board.pop()
-        if (board.turn == chess.WHITE and eval_score > best_eval) or (board.turn != chess.WHITE and eval_score < best_eval):
-            best_eval = eval_score
-            best_move = move
+        print(f"Move: {move}, Eval: {eval_score}")  # Debug
+        if board.turn == chess.WHITE:
+            if eval_score > best_eval:
+                best_eval = eval_score
+                best_move = move
+        else:
+            if eval_score < best_eval:
+                best_eval = eval_score
+                best_move = move
     if best_move is None:
-        raise ValueError("No legal moves available")
+        raise ValueError("No legal moves available after evaluation")
+    print(f"Selected move: {best_move}, Eval: {best_eval}")  # Debug
     return best_move, best_eval
