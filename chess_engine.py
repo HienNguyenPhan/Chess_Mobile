@@ -1,122 +1,384 @@
+# search.py
+import math
 import chess
+import time
 import random
-from typing import Tuple, List
-from eval import evaluate_position, material_values
+from typing import Tuple, Optional, Dict, List
+from utils import evaluate_position, MATERIAL  # your eval module
 
-# Zobrist hashing for transposition table
-zobrist_keys = [[random.getrandbits(64) for _ in range(12)] for _ in range(64)]
-transposition_table = {}  # {hash: {'eval': float, 'depth': int}}
+# -------------------------
+# Config / globals
+# -------------------------
+RNG = random.Random(1234567)
+zobrist_keys = [[RNG.getrandbits(64) for _ in range(12)] for _ in range(64)]
+ZOBRIST_BLACK_TO_MOVE = RNG.getrandbits(64)
 
-def clear_transposition_table():
-    """Clear the transposition table."""
-    transposition_table.clear()
+INF = 1e9
+MATE_SCORE = 32000
 
+# diagnostics
+nodes_searched = 0
+tt_hits = 0
+
+# -------------------------
+# Zobrist (simple per-node hashing)
+# -------------------------
 def zobrist_hash(board: chess.Board) -> int:
     h = 0
     for sq in chess.SQUARES:
         piece = board.piece_at(sq)
-        if piece:
-            piece_idx = piece.piece_type - 1 + (6 if piece.color == chess.BLACK else 0)
+        if piece is not None:
+            piece_idx = (piece.piece_type - 1) + (6 if piece.color == chess.BLACK else 0)
             h ^= zobrist_keys[sq][piece_idx]
-    return h ^ (1 if board.turn == chess.BLACK else 0)
+    if board.turn == chess.BLACK:
+        h ^= ZOBRIST_BLACK_TO_MOVE
+    return h
 
-def generate_moves(board: chess.Board) -> List[chess.Move]:
-    """Generate and sort moves for better pruning."""
-    moves = list(board.legal_moves)
-    print(f"Generated moves: {[str(m) for m in moves]}")  # Debug
-    if not moves:
-        print("No legal moves found")
-        return []
-    def move_priority(move):
-        if board.is_capture(move):
-            piece = board.piece_at(move.to_square)
-            return material_values.get(piece.piece_type, 0) if piece else 0
-        return -1
-    moves.sort(key=move_priority, reverse=True)
-    return moves
+# -------------------------
+# Transposition table
+# -------------------------
+class TTEntry:
+    __slots__ = ("value", "depth", "flag", "best_move")
+    def __init__(self, value: float, depth: int, flag: str, best_move: Optional[chess.Move]):
+        self.value = value
+        self.depth = depth
+        self.flag = flag  # "EXACT", "LOWER", "UPPER"
+        self.best_move = best_move
 
-def quiescence(board: chess.Board, alpha: float, beta: float, max_depth: int = 3) -> float:
-    """Quiescence search for captures."""
-    if max_depth == 0:
-        return evaluate_position(board)
+transposition_table: Dict[int, TTEntry] = {}
+
+def clear_transposition_table():
+    global transposition_table, nodes_searched, tt_hits
+    transposition_table.clear()
+    nodes_searched = 0
+    tt_hits = 0
+
+# -------------------------
+# Move ordering helpers
+# -------------------------
+piece_value_order = {
+    chess.PAWN: 0,
+    chess.KNIGHT: 1,
+    chess.BISHOP: 2,
+    chess.ROOK: 3,
+    chess.QUEEN: 4,
+    chess.KING: 5
+}
+
+def mvv_lva_score(board: chess.Board, move: chess.Move) -> int:
+    if board.is_capture(move):
+        captured = board.piece_at(move.to_square)
+        attacker = board.piece_at(move.from_square)
+        if captured is None or attacker is None:
+            return 0
+        return (piece_value_order.get(captured.piece_type, 0) * 10) - piece_value_order.get(attacker.piece_type, 0)
+    return 0
+
+HISTORY: Dict[Tuple[int,int], int] = {}
+KILLER: Dict[int, List[chess.Move]] = {}
+
+def history_score(move: chess.Move) -> int:
+    return HISTORY.get((move.from_square, move.to_square), 0)
+
+def add_history(move: chess.Move, depth: int):
+    HISTORY[(move.from_square, move.to_square)] = HISTORY.get((move.from_square, move.to_square), 0) + (1 << depth)
+
+def add_killer(move: chess.Move, ply: int):
+    if ply not in KILLER:
+        KILLER[ply] = []
+    if move not in KILLER[ply]:
+        KILLER[ply].insert(0, move)
+        if len(KILLER[ply]) > 2:
+            KILLER[ply].pop()
+
+def is_killer(move: chess.Move, ply: int) -> bool:
+    return move in KILLER.get(ply, [])
+
+# -------------------------
+# Lightweight SEE (approx)
+# -------------------------
+def simple_see_gain(board: chess.Board, move: chess.Move) -> int:
+    """Approximate SEE via material difference: attacker value - captured value (positive = good)."""
+    if not board.is_capture(move):
+        return 0
+    captured = board.piece_at(move.to_square)
+    attacker = board.piece_at(move.from_square)
+    if captured is None or attacker is None:
+        return 0
+    return MATERIAL.get(captured.piece_type, 0) - MATERIAL.get(attacker.piece_type, 0)
+
+# -------------------------
+# Quiescence search (captures & promotions)
+# -------------------------
+def quiescence(board: chess.Board, alpha: float, beta: float) -> float:
+    global nodes_searched
+    nodes_searched += 1
+
     stand_pat = evaluate_position(board)
     if stand_pat >= beta:
         return beta
-    alpha = max(alpha, stand_pat)
-    for move in generate_moves(board):
-        if not board.is_capture(move):
+    if alpha < stand_pat:
+        alpha = stand_pat
+
+    # collect capture/promotion moves
+    moves = [m for m in board.legal_moves if board.is_capture(m) or m.promotion]
+    # order by MVV-LVA + SEE (descending)
+    moves.sort(key=lambda m: (mvv_lva_score(board, m), simple_see_gain(board, m)), reverse=True)
+
+    push = board.push
+    pop = board.pop
+    for m in moves:
+        # quick SEE prune
+        if simple_see_gain(board, m) < -200:
             continue
-        board.push(move)
-        eval_score = -quiescence(board, -beta, -alpha, max_depth - 1)
-        board.pop()
-        if eval_score >= beta:
+        push(m)
+        score = -quiescence(board, -beta, -alpha)
+        pop()
+        if score >= beta:
             return beta
-        alpha = max(alpha, eval_score)
+        if score > alpha:
+            alpha = score
     return alpha
 
-def minimax(board: chess.Board, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
-    """Alpha-beta pruning search."""
-    hash_key = zobrist_hash(board)
-    if hash_key in transposition_table and transposition_table[hash_key]['depth'] >= depth:
-        return transposition_table[hash_key]['eval']
-    
-    if depth == 0 or board.is_game_over():
-        eval_score = quiescence(board, alpha, beta)
-        transposition_table[hash_key] = {'eval': eval_score, 'depth': depth}
-        return eval_score
-    
-    moves = generate_moves(board)
-    if not moves:
-        return evaluate_position(board)
-    
-    if maximizing:
-        max_eval = -float('inf')
-        for move in moves:
-            board.push(move)
-            eval_score = minimax(board, depth - 1, alpha, beta, False)
-            board.pop()
-            max_eval = max(max_eval, eval_score)
-            alpha = max(alpha, eval_score)
-            if beta <= alpha:
-                break
-        transposition_table[hash_key] = {'eval': max_eval, 'depth': depth}
-        return max_eval
-    else:
-        min_eval = float('inf')
-        for move in moves:
-            board.push(move)
-            eval_score = minimax(board, depth - 1, alpha, beta, True)
-            board.pop()
-            min_eval = min(min_eval, eval_score)
-            beta = min(beta, eval_score)
-            if beta <= alpha:
-                break
-        transposition_table[hash_key] = {'eval': min_eval, 'depth': depth}
-        return min_eval
+# -------------------------
+# Negamax with alpha-beta, TT, null-move, check extensions
+# -------------------------
+def negamax(board: chess.Board, depth: int, alpha: float, beta: float, allow_null: bool,
+            start_time: float, time_limit: float, ply: int = 0) -> Tuple[float, bool]:
+    """
+    Negamax with:
+      - TT probing
+      - Null-move pruning
+      - Futility pruning (shallow)
+      - PVS (principal variation search)
+      - LMR (late move reductions) for quiet moves
+      - Check extensions (+1 depth when giving check)
+    Returns (score, time_exceeded_flag).
+    """
+    global nodes_searched, tt_hits
 
-def get_best_move_and_eval(board: chess.Board, depth: int) -> Tuple[chess.Move, float]:
-    """Find best move and evaluation."""
-    print(f"Board FEN: {board.fen()}")  # Debug
-    moves = generate_moves(board)
-    if not moves:
-        raise ValueError("No legal moves available")
-    
-    best_move = None
-    best_eval = -float('inf') if board.turn == chess.WHITE else float('inf')
-    for move in moves:
-        board.push(move)
-        eval_score = minimax(board, depth - 1, -float('inf'), float('inf'), board.turn != chess.WHITE)
+    # time check
+    if time.time() - start_time >= time_limit:
+        return 0.0, True
+
+    nodes_searched += 1
+    zob = zobrist_hash(board)
+    tt_entry = transposition_table.get(zob)
+
+    alpha_orig = alpha  # save original alpha for TT storing
+
+    # ---------- Transposition table probe ----------
+    if tt_entry is not None and tt_entry.depth >= depth:
+        tt_hits += 1
+        if tt_entry.flag == "EXACT":
+            return tt_entry.value, False
+        elif tt_entry.flag == "LOWER":
+            alpha = max(alpha, tt_entry.value)
+        elif tt_entry.flag == "UPPER":
+            beta = min(beta, tt_entry.value)
+        if alpha >= beta:
+            return tt_entry.value, False
+
+    # ---------- leaf node ----------
+    if depth <= 0:
+        val = quiescence(board, alpha, beta)
+        return val, False
+
+    # ---------- Futility pruning (shallow) ----------
+    if depth <= 2 and not board.is_check():
+        static_eval = evaluate_position(board)
+        margin = 100 * depth
+        if static_eval + margin <= alpha:
+            return static_eval, False
+
+    # ---------- Null-move pruning ----------
+    if allow_null and depth >= 3 and not board.is_check():
+        board.push(chess.Move.null())
+        score_nm, time_ex = negamax(board, depth - 1 - 2, -beta, -beta + 1, False, start_time, time_limit, ply + 1)
         board.pop()
-        print(f"Move: {move}, Eval: {eval_score}")  # Debug
-        if board.turn == chess.WHITE:
-            if eval_score > best_eval:
-                best_eval = eval_score
-                best_move = move
+        if time_ex:
+            return 0.0, True
+        # negate NM child to parent perspective
+        if -score_nm >= beta:
+            return -score_nm, False
+
+    # ---------- Generate & order moves ----------
+    legal_moves_iter = board.legal_moves
+    tt_move = tt_entry.best_move if tt_entry else None
+    move_scores = []
+    for m in legal_moves_iter:
+        sc = 0
+        if tt_move and m == tt_move:
+            sc += 1_000_000
+        if board.is_capture(m):
+            sc += 100_000 + mvv_lva_score(board, m)
+        if m.promotion:
+            sc += 80_000
+        if is_killer(m, ply):
+            sc += 5_000
+        sc += history_score(m)
+        move_scores.append((sc, m))
+    move_scores.sort(key=lambda x: x[0], reverse=True)
+    ordered_moves = [m for _, m in move_scores]
+
+    if not ordered_moves:
+        if board.is_checkmate():
+            return -MATE_SCORE + ply, False
         else:
-            if eval_score < best_eval:
-                best_eval = eval_score
-                best_move = move
-    if best_move is None:
-        raise ValueError("No legal moves available after evaluation")
-    print(f"Selected move: {best_move}, Eval: {best_eval}")  # Debug
-    return best_move, best_eval
+            return 0.0, False
+
+    best_value = -INF
+    best_move_local = None
+
+    push = board.push
+    pop = board.pop
+
+    # ---------- PVS + LMR loop ----------
+    for idx, move in enumerate(ordered_moves):
+        # time check
+        if time.time() - start_time >= time_limit:
+            return 0.0, True
+
+        push(move)
+
+        # extension: if move gives check, extend search by 1
+        extension = 1 if board.is_check() else 0
+
+        # Decide whether to try LMR (conservative)
+        used_reduction = 0
+        child_score = None
+
+        if (depth >= 3 and not board.is_capture(move) and not board.is_check()
+                and idx >= 3):
+            # compute reduction conservatively
+            r = 1 + int(math.log2(depth)) if depth > 1 else 1
+            r = min(r, depth - 1)
+            r = max(1, r)
+            reduced_depth = depth - 1 - r + extension
+            # reduced zero-window search first
+            score_reduced, time_ex = negamax(board, reduced_depth, -alpha - 1, -alpha, True, start_time, time_limit, ply + 1)
+            if time_ex:
+                pop()
+                return 0.0, True
+            # convert to parent perspective
+            score_reduced = -score_reduced
+
+            if score_reduced > alpha:
+                # re-search full window at normal depth
+                score_full, time_ex2 = negamax(board, depth - 1 + extension, -beta, -alpha, True, start_time, time_limit, ply + 1)
+                if time_ex2:
+                    pop()
+                    return 0.0, True
+                child_score = -score_full
+            else:
+                child_score = score_reduced
+        else:
+            # Normal PVS behavior
+            if idx == 0:
+                # first move: full window
+                score_child, time_ex = negamax(board, depth - 1 + extension, -beta, -alpha, True, start_time, time_limit, ply + 1)
+                if time_ex:
+                    pop()
+                    return 0.0, True
+                child_score = -score_child
+            else:
+                # zero-window PVS
+                score_zw, time_ex = negamax(board, depth - 1 + extension, -alpha - 1, -alpha, True, start_time, time_limit, ply + 1)
+                if time_ex:
+                    pop()
+                    return 0.0, True
+                child_score = -score_zw
+                if child_score > alpha:
+                    # re-search full window
+                    score_full, time_ex2 = negamax(board, depth - 1 + extension, -beta, -alpha, True, start_time, time_limit, ply + 1)
+                    if time_ex2:
+                        pop()
+                        return 0.0, True
+                    child_score = -score_full
+
+        pop()
+
+        score = child_score  # already in parent perspective
+        if score is None:
+            # fallback safety
+            score = -INF
+
+        if score > best_value:
+            best_value = score
+            best_move_local = move
+
+        if score > alpha:
+            alpha = score
+
+        if alpha >= beta:
+            add_killer(move, ply)
+            add_history(move, depth)
+            break
+
+    # Decide TT flag using alpha_orig (canonical)
+    if best_value <= alpha_orig:
+        flag = "UPPER"
+    elif best_value >= beta:
+        flag = "LOWER"
+    else:
+        flag = "EXACT"
+
+    transposition_table[zob] = TTEntry(best_value, depth, flag, best_move_local)
+    return best_value, False
+
+
+# -------------------------
+# Iterative deepening with aspiration windows
+# -------------------------
+def get_best_move_and_eval(board: chess.Board, time_limit: float = 2.5, max_depth: int = 20) -> Tuple[Optional[chess.Move], float]:
+    """
+    Returns (best_move, score). Score is in same scale as evaluate_position (side-to-move).
+    """
+    global nodes_searched, tt_hits
+    nodes_searched = 0
+    tt_hits = 0
+
+    legal = list(board.legal_moves)
+    if not legal:
+        return None, evaluate_position(board)
+
+    start_time = time.time()
+    best_move = None
+    last_score = 0.0
+    window = 50.0
+
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time >= time_limit:
+            break
+
+        alpha = last_score - window
+        beta = last_score + window
+
+        score, time_exceeded = negamax(board, depth, alpha, beta, True, start_time, time_limit)
+        if time_exceeded:
+            break
+
+        # if outside aspiration window, re-search full window once
+        if score <= alpha or score >= beta:
+            score, time_exceeded = negamax(board, depth, -INF, INF, True, start_time, time_limit)
+            if time_exceeded:
+                break
+
+        # root best move from TT if available
+        zob = zobrist_hash(board)
+        tt = transposition_table.get(zob)
+        if tt and tt.best_move:
+            best_move = tt.best_move
+            best_score = score
+        else:
+            best_move = best_move or legal[0]
+            best_score = score
+
+        last_score = score
+        window = max(20.0, window * 0.75)
+
+        if time.time() - start_time >= time_limit:
+            break    
+    print(f"Depth reached: {depth}, Nodes searched: {nodes_searched}, TT hits: {tt_hits}")
+    return best_move, last_score
+

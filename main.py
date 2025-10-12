@@ -8,15 +8,15 @@ app = FastAPI()
 
 class FENInput(BaseModel):
     fen: str
-    depth: int = 8
+    time_limit: float = 3  # Default time limit in seconds
     session_id: str | None = None
 
 @app.post("/best_move/")
 async def best_move(input_data: FENInput):
     try:
         # Validate inputs
-        if input_data.depth < 1 or input_data.depth > 20:
-            raise HTTPException(status_code=400, detail="Depth must be 1-20")
+        if input_data.time_limit < 0.1 or input_data.time_limit > 30.0:
+            raise HTTPException(status_code=400, detail="Time limit must be 0.1-30 seconds")
         
         # Use provided FEN
         try:
@@ -30,17 +30,15 @@ async def best_move(input_data: FENInput):
         # Generate session ID for response
         session_id = input_data.session_id or str(uuid.uuid4())
         
-        # Get best move and evaluation
-        best_move, eval_score = get_best_move_and_eval(board, input_data.depth)
+        # Get best move and evaluation with time limit
+        best_move, eval_score = get_best_move_and_eval(board, input_data.time_limit)
         
-        # Update board for response
-        board_copy = board.copy()
-        board_copy.push(best_move)
+        if not board.turn:
+            eval_score = -eval_score
         
         return {
             "best_move": str(best_move),
             "evaluation": eval_score,
-            "fen": board_copy.fen(),
             "session_id": session_id
         }
     except Exception as e:
