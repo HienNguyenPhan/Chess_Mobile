@@ -1,12 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 import bulletchess
 from chess_engine import get_best_move_and_eval
 from engine_state import apply_move, get_or_create_board, reset_board, sessions
 from opening_book import get_opening_move, load_book
+from puzzle_manager import (
+    load_puzzles, create_puzzle_session, get_session as get_puzzle_session,
+    delete_session as delete_puzzle_session
+)
 
-# Load opening book at startup
+# Load opening book and puzzles at startup
 load_book()
+load_puzzles()
 
 app = FastAPI()
 
@@ -117,3 +123,118 @@ def delete_session(session_id: str):
 def get_session_count():
     """Get the current number of active sessions (for monitoring)."""
     return {"active_sessions": len(sessions)}
+
+
+# ============================================================================
+# PUZZLE ENDPOINTS
+# ============================================================================
+
+class NewPuzzleRequest(BaseModel):
+    session_id: str
+
+class PuzzleMoveRequest(BaseModel):
+    session_id: str
+    move_uci: str
+
+@app.post("/puzzle/new")
+def new_puzzle(req: NewPuzzleRequest):
+    """
+    Get a new random puzzle.
+    """
+    try:
+        puzzle_data = create_puzzle_session(
+            req.session_id, 
+        )
+        
+        
+        return {
+            "message": "New puzzle started",
+            "puzzle_id": puzzle_data['puzzle_id'],
+            "fen": puzzle_data['fen'],
+            "rating": puzzle_data['rating'],
+            "themes": puzzle_data.get('themes', ''),
+            "theme_description": puzzle_data.get('theme_description', ''),
+            "total_moves": puzzle_data['total_moves'],
+            "session_id": req.session_id,
+            "moves": puzzle_data['moves']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/puzzle/move")
+def puzzle_move(req: PuzzleMoveRequest):
+    """
+    Make a move in the current puzzle.
+    
+    Returns:
+    - status: 'correct', 'wrong', 'complete', or 'error'
+    - If correct: new FEN and progress
+    - If wrong: expected move and current FEN
+    - If complete: success message and puzzle rating
+    """
+    try:
+        session = get_puzzle_session(req.session_id)
+        
+        if session is None:
+            raise HTTPException(status_code=404, detail="No active puzzle session. Start a new puzzle first.")
+        
+        result = session.make_move(req.move_uci)
+        result['session_id'] = req.session_id
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/puzzle/hint/{session_id}")
+def get_hint(session_id: str):
+    """
+    Get a hint for the current puzzle (shows from-square of next move).
+    """
+    try:
+        session = get_puzzle_session(session_id)
+        
+        if session is None:
+            raise HTTPException(status_code=404, detail="No active puzzle session")
+        
+        hint = session.get_hint()
+        
+        if hint is None:
+            return {"message": "No hint available"}
+        
+        return {
+            "hint": hint,
+            "message": f"Move from square: {hint}",
+            "session_id": session_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/puzzle/status/{session_id}")
+def puzzle_status(session_id: str):
+    """Get current puzzle status and progress."""
+    try:
+        session = get_puzzle_session(session_id)
+        
+        if session is None:
+            raise HTTPException(status_code=404, detail="No active puzzle session")
+        
+        return {
+            "puzzle_id": session.puzzle_id,
+            "fen": session.get_current_fen(),
+            "rating": session.rating,
+            "progress": f"{session.current_move_index}/{len(session.solution_moves)}",
+            "completed": session.completed,
+            "failed": session.failed,
+            "session_id": session_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/puzzle/{session_id}")
+def delete_puzzle(session_id: str):
+    """Delete a puzzle session."""
+    try:
+        delete_puzzle_session(session_id)
+        return {"message": f"Puzzle session {session_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
