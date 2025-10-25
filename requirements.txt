@@ -1,4 +1,5 @@
 fastapi==0.104.1
+python >= 3.13
 uvicorn[standard]==0.24.0
 bulletchess==0.1.9
 python-chess>=1.999
