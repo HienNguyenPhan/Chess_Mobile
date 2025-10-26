@@ -28,6 +28,9 @@ class BotMoveRequest(BaseModel):
     session_id: str
     time_limit: float = 5.0
 
+class HistoryRequest(BaseModel):
+    session_id: str
+
 @app.post("/bot_move")
 def bot_move(req: BotMoveRequest):
     try:
@@ -61,6 +64,18 @@ def bot_move(req: BotMoveRequest):
             "evaluation": eval_score,
             "from_book": from_book,
             "fen": board.fen(),
+            "session_id": req.session_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/get_history")
+def get_history(req: HistoryRequest):
+    try:
+        board = get_or_create_board(req.session_id)
+        history = board.history    
+        return {
+            "history": history,
             "session_id": req.session_id,
         }
     except Exception as e:
