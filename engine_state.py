@@ -1,10 +1,12 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from datetime import datetime, timedelta
 import bulletchess
 from chess_engine import clear_transposition_table
 
 # store all ongoing sessions with last access time
 sessions: Dict[str, Tuple[bulletchess.Board, datetime]] = {}
+# Track resigned/manually ended games
+resigned_games: Dict[str, str] = {}  # session_id -> winner ('white' or 'black')
 SESSION_TTL = timedelta(hours=2)  # Sessions expire after 2 hours of inactivity
 
 def cleanup_old_sessions():
@@ -44,8 +46,19 @@ def apply_move(session_id: str, move_uci: str) -> bulletchess.Board:
 def reset_board(session_id: str):
     board = bulletchess.Board()
     sessions[session_id] = (board, datetime.now())
+    # Clear resignation status when starting new game
+    if session_id in resigned_games:
+        del resigned_games[session_id]
     # Clear transposition table to avoid hash collisions from previous games
     clear_transposition_table()
 
 def get_fen(session_id: str) -> str:
     return get_or_create_board(session_id).fen()
+
+def mark_game_resigned(session_id: str, winner: str):
+    """Mark a game as resigned with the specified winner."""
+    resigned_games[session_id] = winner
+
+def is_game_resigned(session_id: str) -> Optional[str]:
+    """Check if game is resigned. Returns winner ('white'/'black') or None."""
+    return resigned_games.get(session_id)

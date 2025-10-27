@@ -1,9 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 import bulletchess
+from bulletchess import CHECKMATE, DRAW, CHECK
 from chess_engine import get_best_move_and_eval
-from engine_state import apply_move, get_or_create_board, reset_board, sessions
+from engine_state import (
+    apply_move, get_or_create_board, reset_board, sessions,
+    mark_game_resigned, is_game_resigned
+)
 from opening_book import get_opening_move, load_book
 from puzzle_manager import (
     load_puzzles, create_puzzle_session, get_session as get_puzzle_session,
@@ -15,6 +19,75 @@ load_book()
 load_puzzles()
 
 app = FastAPI()
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def check_game_status(board: bulletchess.Board, session_id: str) -> Dict[str, Any]:
+    """
+    Check if the game has ended and return status information.
+    
+    Args:
+        board: The chess board to check
+        session_id: The session ID to check for resignation
+    
+    Returns:
+        dict with keys:
+        - game_over: bool
+        - result: str ('win', 'lose', 'draw', None)
+        - reason: str (checkmate, stalemate, insufficient_material, etc.)
+        - winner: str ('white', 'black', None)
+    """
+    # First check if the game was resigned
+    winner = is_game_resigned(session_id)
+    if winner:
+        return {
+            "game_over": True,
+            "result": f"{winner} wins",
+            "reason": "resignation",
+            "winner": winner,
+            "in_check": board in CHECK
+        }
+    
+    status = {
+        "game_over": False,
+        "result": None,
+        "reason": None,
+        "winner": None,
+        "in_check": board in CHECK
+    }
+    
+    # Check for checkmate
+    if board in CHECKMATE:
+        status["game_over"] = True
+        status["reason"] = "checkmate"
+        # The side to move is checkmated (they lost)
+        status["winner"] = "black" if board.turn == bulletchess.WHITE else "white"
+        return status
+    
+    # Check for draw conditions
+    if board in DRAW:
+        status["game_over"] = True
+        status["result"] = "draw"
+        status["winner"] = None
+        
+        # Determine specific draw reason
+        if not list(board.legal_moves()):
+            status["reason"] = "stalemate"
+        elif board.is_insufficient_material():
+            status["reason"] = "insufficient_material"
+        elif board.can_claim_fifty_move_rule():
+            status["reason"] = "fifty_move_rule"
+        elif board.can_claim_threefold_repetition():
+            status["reason"] = "threefold_repetition"
+        else:
+            status["reason"] = "draw"
+        
+        return status
+    
+    # Game is still ongoing
+    return status
 
 class MoveRequest(BaseModel):
     session_id: str
@@ -36,6 +109,16 @@ def bot_move(req: BotMoveRequest):
     try:
         board = get_or_create_board(req.session_id)
         
+        # Check if game is already over
+        status = check_game_status(board, req.session_id)
+        if status["game_over"]:
+            return {
+                "error": "Game is already over",
+                "game_status": status,
+                "fen": board.fen(),
+                "session_id": req.session_id,
+            }
+        
         # Try to get move from opening book first
         book_move = get_opening_move(board, random_choice=True)
         
@@ -50,8 +133,11 @@ def bot_move(req: BotMoveRequest):
             from_book = False
         
         if not best_move_uci:
+            # No legal moves - game is over
+            status = check_game_status(board, req.session_id)
             return {
                 "error": "No legal moves available",
+                "game_status": status,
                 "fen": board.fen(),
                 "session_id": req.session_id,
             }
@@ -59,13 +145,28 @@ def bot_move(req: BotMoveRequest):
         move = bulletchess.Move.from_uci(best_move_uci)
         board.apply(move)
         
-        return {
+        # Check game status after bot's move
+        status = check_game_status(board, req.session_id)
+        
+        response = {
             "best_move": best_move_uci,
             "evaluation": eval_score,
             "from_book": from_book,
             "fen": board.fen(),
+            "game_status": status,
             "session_id": req.session_id,
         }
+        
+        # Add user-friendly message if game ended
+        if status["game_over"]:
+            if status["reason"] == "checkmate":
+                response["message"] = f"Checkmate! {status['winner'].capitalize()} wins!"
+            elif status["reason"] == "stalemate":
+                response["message"] = "Draw by stalemate"
+            else:
+                response["message"] = f"Draw by {status['reason'].replace('_', ' ')}"
+        
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -119,8 +220,40 @@ def new_game(req: NewGameRequest):
 @app.post("/move")
 def player_move(req: MoveRequest):
     try:
+        board = get_or_create_board(req.session_id)
+        
+        # Check if game is already over
+        status = check_game_status(board, req.session_id)
+        if status["game_over"]:
+            return {
+                "error": "Game is already over",
+                "game_status": status,
+                "fen": board.fen(),
+                "session_id": req.session_id,
+            }
+        
+        # Apply the player's move
         board = apply_move(req.session_id, req.move_uci)
-        return {"fen": board.fen(), "session_id": req.session_id}
+        
+        # Check game status after player's move
+        status = check_game_status(board, req.session_id)
+        
+        response = {
+            "fen": board.fen(),
+            "game_status": status,
+            "session_id": req.session_id
+        }
+        
+        # Add user-friendly message if game ended
+        if status["game_over"]:
+            if status["reason"] == "checkmate":
+                response["message"] = f"Checkmate! {status['winner'].capitalize()} wins!"
+            elif status["reason"] == "stalemate":
+                response["message"] = "Draw by stalemate"
+            else:
+                response["message"] = f"Draw by {status['reason'].replace('_', ' ')}"
+        
+        return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -139,6 +272,94 @@ def get_session_count():
     """Get the current number of active sessions (for monitoring)."""
     return {"active_sessions": len(sessions)}
 
+@app.post("/resign/{session_id}")
+def resign_game(session_id: str):
+    """
+    Resign the current game. The player whose turn it is loses.
+    """
+    try:
+        board = get_or_create_board(session_id)
+        status = check_game_status(board, session_id)
+        
+        if status["game_over"]:
+            return {
+                "error": "Game is already over",
+                "game_status": status,
+                "fen": board.fen(),
+                "session_id": session_id,
+            }
+        
+        # Determine winner - player resigning loses
+        winner = "black" if board.turn == bulletchess.WHITE else "white"
+        
+        # Mark game as resigned
+        mark_game_resigned(session_id, winner)
+        
+        # Create resignation status
+        resignation_status = {
+            "game_over": True,
+            "result": "resignation",
+            "reason": "resignation",
+            "winner": winner,
+            "in_check": status["in_check"]  # Preserve check status
+        }
+        
+        return {
+            "message": f"{winner.capitalize()} wins by resignation",
+            "fen": board.fen(),
+            "game_status": resignation_status,
+            "session_id": session_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/undo/{session_id}")
+def undo_move(session_id: str):
+    """
+    Undo the last move(s). 
+    - In player vs bot: undoes both bot's move and player's move (2 moves)
+    - Returns to the position before player's last move
+    """
+    try:
+        board = get_or_create_board(session_id)
+        
+        # Check if there are moves to undo
+        if not board.history:
+            return {
+                "error": "No moves to undo",
+                "fen": board.fen(),
+                "session_id": session_id,
+            }
+        
+        # Check if game is over
+        status = check_game_status(board, session_id)
+        if status["game_over"]:
+            # Allow undo even if game is over (to review/continue)
+            pass
+        
+        # Undo 2 moves (bot's move + player's move)
+        moves_undone = 0
+        max_undo = min(2, len(board.history))
+        
+        for _ in range(max_undo):
+            try:
+                board.undo()
+                moves_undone += 1
+            except:
+                break
+        
+        # Get updated game status
+        status = check_game_status(board, session_id)
+        
+        return {
+            "message": f"Undone {moves_undone} move(s)",
+            "moves_undone": moves_undone,
+            "fen": board.fen(),
+            "game_status": status,
+            "session_id": session_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # PUZZLE ENDPOINTS
