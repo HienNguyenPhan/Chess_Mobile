@@ -44,7 +44,7 @@ def check_game_status(board: bulletchess.Board, session_id: str) -> Dict[str, An
     if winner:
         return {
             "game_over": True,
-            "result": f"{winner} wins",
+            "result": "win",  # Consistent: win/draw not descriptive strings
             "reason": "resignation",
             "winner": winner,
             "in_check": board in CHECK
@@ -62,6 +62,7 @@ def check_game_status(board: bulletchess.Board, session_id: str) -> Dict[str, An
     if board in CHECKMATE:
         status["game_over"] = True
         status["reason"] = "checkmate"
+        status["result"] = "win"  # Consistent with other game endings
         # The side to move is checkmated (they lost)
         status["winner"] = "black" if board.turn == bulletchess.WHITE else "white"
         return status
@@ -107,6 +108,12 @@ class HistoryRequest(BaseModel):
 @app.post("/bot_move")
 def bot_move(req: BotMoveRequest):
     try:
+        # Validate time_limit
+        if req.time_limit <= 0:
+            raise HTTPException(status_code=400, detail="time_limit must be positive")
+        if req.time_limit > 60:
+            raise HTTPException(status_code=400, detail="time_limit cannot exceed 60 seconds")
+        
         board = get_or_create_board(req.session_id)
         
         # Check if game is already over
@@ -262,8 +269,13 @@ def player_move(req: MoveRequest):
 @app.delete("/session/{session_id}")
 def delete_session(session_id: str):
     """Delete a session to free up memory."""
+    from engine_state import resigned_games
+    
     if session_id in sessions:
         del sessions[session_id]
+        # Also clean up resignation status if exists
+        if session_id in resigned_games:
+            del resigned_games[session_id]
         return {"message": f"Session {session_id} deleted"}
     raise HTTPException(status_code=404, detail="Session not found")
 
@@ -347,6 +359,11 @@ def undo_move(session_id: str):
                 moves_undone += 1
             except:
                 break
+        
+        # Clear resignation status when undoing (game is back in play)
+        if is_game_resigned(session_id):
+            from engine_state import resigned_games
+            del resigned_games[session_id]
         
         # Get updated game status
         status = check_game_status(board, session_id)

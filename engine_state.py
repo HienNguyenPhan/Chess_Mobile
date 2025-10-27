@@ -16,6 +16,9 @@ def cleanup_old_sessions():
                if now - last_access > SESSION_TTL]
     for sid in expired:
         del sessions[sid]
+        # Also clean up resignation status for expired sessions
+        if sid in resigned_games:
+            del resigned_games[sid]
 
 def get_or_create_board(session_id: str) -> bulletchess.Board:
     # Periodically cleanup old sessions (every 100th call)
