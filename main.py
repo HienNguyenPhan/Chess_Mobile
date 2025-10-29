@@ -93,6 +93,10 @@ def check_game_status(board: bulletchess.Board, session_id: str) -> Dict[str, An
 class MoveRequest(BaseModel):
     session_id: str
     move_uci: str
+    # If true, server will immediately compute and apply the bot's reply after the player's move
+    auto_bot_response: bool = False
+    # Time limit (seconds) to use for the bot move when auto_bot_response is true
+    bot_time_limit: float = 5.0
 
 class NewGameRequest(BaseModel):
     session_id: str
@@ -241,17 +245,17 @@ def player_move(req: MoveRequest):
         
         # Apply the player's move
         board = apply_move(req.session_id, req.move_uci)
-        
+
         # Check game status after player's move
         status = check_game_status(board, req.session_id)
-        
+
         response = {
             "fen": board.fen(),
             "game_status": status,
             "session_id": req.session_id
         }
-        
-        # Add user-friendly message if game ended
+
+        # Add user-friendly message if game ended after player's move
         if status["game_over"]:
             if status["reason"] == "checkmate":
                 response["message"] = f"Checkmate! {status['winner'].capitalize()} wins!"
@@ -259,7 +263,63 @@ def player_move(req: MoveRequest):
                 response["message"] = "Draw by stalemate"
             else:
                 response["message"] = f"Draw by {status['reason'].replace('_', ' ')}"
-        
+
+            return response
+
+        # If requested, compute and apply the bot's reply immediately
+        if req.auto_bot_response:
+            # Validate time limit for bot move
+            if req.bot_time_limit <= 0:
+                raise HTTPException(status_code=400, detail="bot_time_limit must be positive")
+            if req.bot_time_limit > 60:
+                raise HTTPException(status_code=400, detail="bot_time_limit cannot exceed 60 seconds")
+
+            # Try opening book first
+            book_move = get_opening_move(board, random_choice=True)
+
+            if book_move:
+                bot_move_uci = book_move
+                bot_eval = 0.0
+                bot_from_book = True
+            else:
+                bot_move_uci, bot_eval = get_best_move_and_eval(board, time_limit=req.bot_time_limit)
+                bot_from_book = False
+
+            if not bot_move_uci:
+                # No legal bot move available (game may be over)
+                status = check_game_status(board, req.session_id)
+                response.update({
+                    "bot_error": "No legal bot moves available",
+                    "game_status": status,
+                    "fen": board.fen()
+                })
+                return response
+
+            # Apply bot move
+            bot_move = bulletchess.Move.from_uci(bot_move_uci)
+            board.apply(bot_move)
+
+            # Check game status after bot move
+            status_after_bot = check_game_status(board, req.session_id)
+
+            # Attach bot move details to response
+            response.update({
+                "bot_move": bot_move_uci,
+                "bot_evaluation": bot_eval,
+                "bot_from_book": bot_from_book,
+                "fen": board.fen(),
+                "game_status": status_after_bot,
+            })
+
+            # Friendly end-game message if bot ended the game
+            if status_after_bot["game_over"]:
+                if status_after_bot["reason"] == "checkmate":
+                    response["message"] = f"Checkmate! {status_after_bot['winner'].capitalize()} wins!"
+                elif status_after_bot["reason"] == "stalemate":
+                    response["message"] = "Draw by stalemate"
+                else:
+                    response["message"] = f"Draw by {status_after_bot['reason'].replace('_', ' ')}"
+
         return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
