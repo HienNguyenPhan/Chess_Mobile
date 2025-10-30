@@ -108,9 +108,8 @@ def get_random_puzzle(min_rating: Optional[int] = None, max_rating: Optional[int
     return {
         'puzzle_id': puzzle['PuzzleId'],
         'fen': puzzle['FEN'],
-        'moves': moves,  # Full solution sequence
+        'moves': moves,
         'rating': int(puzzle['Rating']),
-        'themes': themes,
         'theme_description': get_theme_description(themes),
         'total_moves': len(moves)
     }
@@ -293,7 +292,8 @@ def create_puzzle_session(session_id: str, min_rating: Optional[int] = None,
         'fen': puzzle_data['fen'],
         'rating': puzzle_data['rating'],
         'total_moves': puzzle_data['total_moves'],
-        'moves': puzzle_data['moves']
+        'moves': puzzle_data['moves'],
+        'theme_description': puzzle_data['theme_description']
     }
 
 def get_session(session_id: str) -> Optional[PuzzleSession]:
