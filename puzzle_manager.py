@@ -172,12 +172,6 @@ class PuzzleSession:
         """Get current board position."""
         return self.board.fen()
     
-    def get_expected_move(self) -> Optional[str]:
-        """Get the next expected move in the solution."""
-        if self.current_move_index < len(self.solution_moves):
-            return self.solution_moves[self.current_move_index]
-        return None
-    
     def make_move(self, move_uci: str) -> Dict:
         """
         Make a move and check if it's correct.
@@ -191,13 +185,14 @@ class PuzzleSession:
                 'message': 'Puzzle already completed or failed'
             }
         
-        expected_move = self.get_expected_move()
-        
-        if expected_move is None:
+        # Get expected move directly from solution_moves
+        if self.current_move_index >= len(self.solution_moves):
             return {
                 'status': 'error',
                 'message': 'No more moves expected'
             }
+        
+        expected_move = self.solution_moves[self.current_move_index]
         
         # Check if move is correct
         if move_uci != expected_move:
@@ -261,7 +256,7 @@ class PuzzleSession:
             }
         
         # Get next expected player move
-        next_move = self.get_expected_move()
+        next_move = self.solution_moves[self.current_move_index] if self.current_move_index < len(self.solution_moves) else None
         # Calculate remaining player moves
         remaining_count = len([i for i in range(self.current_move_index, len(self.solution_moves), 2)])
         
@@ -276,8 +271,8 @@ class PuzzleSession:
     
     def get_hint(self) -> Optional[str]:
         """Get a hint for the next move."""
-        expected_move = self.get_expected_move()
-        if expected_move:
+        if self.current_move_index < len(self.solution_moves):
+            expected_move = self.solution_moves[self.current_move_index]
             # Return from-square as a hint
             return expected_move[:2]  # e.g., "e2" from "e2e4"
         return None
@@ -315,12 +310,15 @@ def create_puzzle_session(session_id: str, min_rating: Optional[int] = None,
     # Calculate total player moves (odd indices: 1, 3, 5...)
     total_player_moves = len([i for i in range(1, len(session.solution_moves), 2)])
     
+    # Return moves list without the first move (opponent's blunder)
+    moves_without_first = session.solution_moves[1:] if len(session.solution_moves) > 1 else []
+    
     return {
         'puzzle_id': puzzle_data['puzzle_id'],
         'fen': session.get_current_fen(),  # Position after opponent's blunder
         'rating': puzzle_data['rating'],
         'total_moves': total_player_moves,  # Number of moves player needs to make
-        'move': session.get_expected_move(),  # Only the current correct move
+        'moves': moves_without_first,  # All moves except the first one
         'theme_description': puzzle_data['theme_description']
     }
 
