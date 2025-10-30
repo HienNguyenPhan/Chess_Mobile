@@ -4,15 +4,26 @@ import bulletchess
 from chess_engine import clear_transposition_table
 
 # store all ongoing sessions with last access time
-sessions: Dict[str, Tuple[bulletchess.Board, datetime]] = {}
+# Key format: "sessionID_userID" -> (board, last_access_time, user_id)
+sessions: Dict[str, Tuple[bulletchess.Board, datetime, str]] = {}
 # Track resigned/manually ended games
 resigned_games: Dict[str, str] = {}  # session_id -> winner ('white' or 'black')
 SESSION_TTL = timedelta(hours=2)  # Sessions expire after 2 hours of inactivity
 
+def parse_session_id(session_id: str) -> Tuple[str, str]:
+    """
+    Parse combined session_id format: 'sessionID_userID'
+    Returns: (full_session_id, user_id)
+    """
+    parts = session_id.rsplit('_', 1)  # Split from right to handle userIDs with underscores
+    if len(parts) == 2:
+        return session_id, parts[1]  # Return full ID and user_id
+    return session_id, "unknown"  # Fallback for legacy format
+
 def cleanup_old_sessions():
     """Remove sessions that haven't been accessed recently."""
     now = datetime.now()
-    expired = [sid for sid, (_, last_access) in sessions.items() 
+    expired = [sid for sid, (_, last_access, _) in sessions.items() 
                if now - last_access > SESSION_TTL]
     for sid in expired:
         del sessions[sid]
@@ -27,12 +38,13 @@ def get_or_create_board(session_id: str) -> bulletchess.Board:
         cleanup_old_sessions()
     
     if session_id not in sessions:
+        full_id, user_id = parse_session_id(session_id)
         board = bulletchess.Board()
-        sessions[session_id] = (board, datetime.now())
+        sessions[session_id] = (board, datetime.now(), user_id)
     else:
-        board, _ = sessions[session_id]
+        board, _, user_id = sessions[session_id]
         # Update last access time
-        sessions[session_id] = (board, datetime.now())
+        sessions[session_id] = (board, datetime.now(), user_id)
     
     return board
 
@@ -42,13 +54,14 @@ def apply_move(session_id: str, move_uci: str) -> bulletchess.Board:
     board.apply(move)
     # Update last access time
     if session_id in sessions:
-        old_board, _ = sessions[session_id]
-        sessions[session_id] = (old_board, datetime.now())
+        old_board, _, user_id = sessions[session_id]
+        sessions[session_id] = (old_board, datetime.now(), user_id)
     return board
 
 def reset_board(session_id: str):
+    full_id, user_id = parse_session_id(session_id)
     board = bulletchess.Board()
-    sessions[session_id] = (board, datetime.now())
+    sessions[session_id] = (board, datetime.now(), user_id)
     # Clear resignation status when starting new game
     if session_id in resigned_games:
         del resigned_games[session_id]

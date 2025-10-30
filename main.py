@@ -13,6 +13,7 @@ from puzzle_manager import (
     load_puzzles, create_puzzle_session, get_session as get_puzzle_session,
     delete_session as delete_puzzle_session
 )
+import uuid
 
 # Load opening book and puzzles at startup
 load_book()
@@ -465,11 +466,10 @@ def new_puzzle(req: NewPuzzleRequest):
             "puzzle_id": puzzle_data['puzzle_id'],
             "fen": puzzle_data['fen'],
             "rating": puzzle_data['rating'],
-            "themes": puzzle_data.get('themes', ''),
             "theme_description": puzzle_data.get('theme_description', ''),
             "total_moves": puzzle_data['total_moves'],
             "session_id": req.session_id,
-            "moves": puzzle_data['moves']
+            "move": puzzle_data['move']
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

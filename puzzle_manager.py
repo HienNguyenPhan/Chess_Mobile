@@ -146,12 +146,25 @@ class PuzzleSession:
     
     def __init__(self, puzzle_data: Dict):
         self.puzzle_id = puzzle_data['puzzle_id']
+        self.initial_fen = puzzle_data['fen']
         self.board = bulletchess.Board.from_fen(puzzle_data['fen'])
         self.solution_moves = puzzle_data['moves']
         self.rating = puzzle_data['rating']
         self.themes = puzzle_data.get('themes', '')
         self.theme_description = puzzle_data.get('theme_description', '')
-        self.current_move_index = 0
+        
+        # Lichess puzzle format: first move is the opponent's move that creates the puzzle
+        # Apply it to get to the position where the player needs to find the winning move
+        self.current_move_index = 1  # Start at 1 (player's first move)
+        if len(self.solution_moves) > 0:
+            try:
+                opponent_move = bulletchess.Move.from_uci(self.solution_moves[0])
+                self.board.apply(opponent_move)
+                print(f"[DEBUG] Applied opponent's move: {self.solution_moves[0]}")
+            except Exception as e:
+                print(f"[ERROR] Could not apply opponent's move {self.solution_moves[0]}: {e}")
+                self.current_move_index = 0  # Fallback to original behavior
+            
         self.completed = False
         self.failed = False
     
@@ -194,6 +207,7 @@ class PuzzleSession:
                 'message': 'Incorrect move!',
                 'expected_move': expected_move,
                 'fen': self.board.fen(),
+                'move': expected_move,  # The correct move they should have made
                 'progress': f"{self.current_move_index}/{len(self.solution_moves)}"
             }
         
@@ -213,14 +227,15 @@ class PuzzleSession:
             self.completed = True
             return {
                 'status': 'complete',
-                'message': 'Puzzle solved!',
+                'message': 'Puzzle solved! 🎉',
                 'fen': self.board.fen(),
+                'move': None,
                 'rating': self.rating,
                 'themes': self.themes,
                 'theme_description': self.theme_description
             }
         
-        # Move correct but more moves needed - make opponent's move
+        # Move correct but more moves needed - make opponent's move automatically
         opponent_move_uci = self.solution_moves[self.current_move_index]
         try:
             opponent_move = bulletchess.Move.from_uci(opponent_move_uci)
@@ -239,17 +254,24 @@ class PuzzleSession:
                 'status': 'complete',
                 'message': 'Puzzle solved! 🎉',
                 'fen': self.board.fen(),
+                'move': None,
                 'rating': self.rating,
                 'themes': self.themes,
                 'theme_description': self.theme_description
             }
         
+        # Get next expected player move
+        next_move = self.get_expected_move()
+        # Calculate remaining player moves
+        remaining_count = len([i for i in range(self.current_move_index, len(self.solution_moves), 2)])
+        
         return {
             'status': 'correct',
             'message': 'Correct move! Continue...',
             'fen': self.board.fen(),
+            'move': next_move,  # Only the next correct move
             'progress': f"{self.current_move_index}/{len(self.solution_moves)}",
-            'moves_remaining': len(self.solution_moves) - self.current_move_index
+            'moves_remaining': remaining_count
         }
     
     def get_hint(self) -> Optional[str]:
@@ -262,16 +284,19 @@ class PuzzleSession:
     
     def reset(self):
         """Reset puzzle to initial position."""
-        self.board = bulletchess.Board.from_fen(self.get_initial_fen())
-        self.current_move_index = 0
+        self.board = bulletchess.Board.from_fen(self.initial_fen)
+        # Re-apply opponent's blunder
+        if len(self.solution_moves) > 0:
+            try:
+                opponent_blunder = bulletchess.Move.from_uci(self.solution_moves[0])
+                self.board.apply(opponent_blunder)
+                self.current_move_index = 1
+            except:
+                self.current_move_index = 0
+        else:
+            self.current_move_index = 0
         self.completed = False
         self.failed = False
-    
-    def get_initial_fen(self) -> str:
-        """Get the initial FEN of the puzzle."""
-        # Reconstruct initial position by undoing all moves
-        # For simplicity, store it when creating the session
-        pass
 
 # Store active puzzle sessions
 active_sessions: Dict[str, PuzzleSession] = {}
@@ -287,12 +312,15 @@ def create_puzzle_session(session_id: str, min_rating: Optional[int] = None,
     session = PuzzleSession(puzzle_data)
     active_sessions[session_id] = session
     
+    # Calculate total player moves (odd indices: 1, 3, 5...)
+    total_player_moves = len([i for i in range(1, len(session.solution_moves), 2)])
+    
     return {
         'puzzle_id': puzzle_data['puzzle_id'],
-        'fen': puzzle_data['fen'],
+        'fen': session.get_current_fen(),  # Position after opponent's blunder
         'rating': puzzle_data['rating'],
-        'total_moves': puzzle_data['total_moves'],
-        'moves': puzzle_data['moves'],
+        'total_moves': total_player_moves,  # Number of moves player needs to make
+        'move': session.get_expected_move(),  # Only the current correct move
         'theme_description': puzzle_data['theme_description']
     }
 
