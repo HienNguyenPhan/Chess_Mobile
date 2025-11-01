@@ -125,14 +125,14 @@ piece_square_tables = {
     },
     KING: {
         'opening': [
-            -30,-40,-40,-50,-50,-40,-40,-30,
-            -30,-40,-40,-50,-50,-40,-40,-30,
-            -30,-40,-40,-50,-50,-40,-40,-30,
-            -30,-40,-40,-50,-50,-40,-40,-30,
-            -20,-30,-30,-40,-40,-30,-30,-20,
-            -10,-20,-20,-20,-20,-20,-20,-10,
-             10, 10,  0,  0,  0,  0, 10, 10,
-             20, 30, 10,  0,  0, 10, 30, 20
+            -30,-40,-40,-50,-50,-40,-40,-30,  # Rank 1 - king on back rank in opening
+            -40,-50,-50,-60,-60,-50,-50,-40,  # Rank 2 - PENALIZE king moving forward
+            -50,-60,-60,-70,-70,-60,-60,-50,  # Rank 3 - even worse
+            -60,-70,-70,-80,-80,-70,-70,-60,  # Rank 4 - terrible
+            -60,-70,-70,-80,-80,-70,-70,-60,  # Rank 5
+            -50,-60,-60,-70,-70,-60,-60,-50,  # Rank 6
+            -10,-20,-20,-20,-20,-20,-20,-10,  # Rank 7 - OK for castled position
+             10, 10,  0,  0,  0,  0, 10, 10   # Rank 8 - good on back rank with castling
         ],
         'endgame': [
             -50,-40,-30,-20,-20,-30,-40,-50,
@@ -155,8 +155,9 @@ for ptype in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING]:
     interpolated_pst[ptype] = []
     for phase_step in range(PHASE_STEPS + 1):
         weight = phase_step / PHASE_STEPS
+        # weight=0 (phase_step=0) => opening, weight=1 (phase_step=10) => endgame
         interpolated_pst[ptype].append([
-            PST[ptype]['opening'][i] * weight + PST[ptype]['endgame'][i] * (1 - weight)
+            PST[ptype]['opening'][i] * (1 - weight) + PST[ptype]['endgame'][i] * weight
             for i in range(64)
         ])
 
@@ -188,7 +189,16 @@ def compute_pst_and_material(state: bulletchess.Board, phase: float) -> float:
             value = MATERIAL[ptype]
             table = interpolated_pst[ptype][phase_idx]
             for sq in bb:
-                idx = sq.index() if color == WHITE else 63 - sq.index()
+                sq_idx = sq.index()
+                rank = sq_idx // 8
+                file = sq_idx % 8
+                # PST is from black's perspective (rank 8 at top)
+                # For white: flip rank only (e1 -> e8)
+                # For black: use direct index
+                if color == WHITE:
+                    idx = (7 - rank) * 8 + file
+                else:
+                    idx = sq_idx
                 score += sign * (value + table[idx])
     return score
 
@@ -266,11 +276,14 @@ def passed_pawn_bonus(board, phase_weight):
     return bonus
 
 def _is_passed_pawn(board, square_index, is_white):
-    """Check if pawn is passed (no enemy pawns ahead)"""
+    """Check if pawn is passed (no enemy pawns ahead) - optimized version"""
     rank = square_index // 8
     file_idx = square_index % 8
     
     enemy_pawns = board[BLACK, PAWN] if is_white else board[WHITE, PAWN]
+    
+    # Create set of enemy pawn indices for O(1) lookup
+    enemy_indices = set(sq.index() for sq in enemy_pawns)
     
     # Check file and adjacent files
     for check_file in [file_idx - 1, file_idx, file_idx + 1]:
@@ -284,10 +297,9 @@ def _is_passed_pawn(board, square_index, is_white):
             check_ranks = range(0, rank)
         
         for check_rank in check_ranks:
-            # Check if enemy pawn exists at this square
-            for enemy_sq in enemy_pawns:
-                if enemy_sq.index() == check_rank * 8 + check_file:
-                    return False
+            # O(1) check if enemy pawn exists at this square
+            if check_rank * 8 + check_file in enemy_indices:
+                return False
     
     return True
 
