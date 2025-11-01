@@ -469,7 +469,7 @@ def new_puzzle(req: NewPuzzleRequest):
             "theme_description": puzzle_data.get('theme_description', ''),
             "total_moves": puzzle_data['total_moves'],
             "session_id": req.session_id,
-            "move": puzzle_data['move']
+            "moves": puzzle_data['moves']
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
