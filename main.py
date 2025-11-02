@@ -211,7 +211,7 @@ def new_game(req: NewGameRequest):
                 from_book = True
             else:
                 # Fallback to engine if no book move
-                best_move_uci, eval_score = get_best_move_and_eval(board, time_limit=3.0)
+                best_move_uci, eval_score = get_best_move_and_eval(board, time_limit=5.0)
                 from_book = False
             
             if best_move_uci:
