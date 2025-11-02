@@ -186,7 +186,16 @@ def quiescence(state: bulletchess.Board, alpha: float, beta: float, ply: int = 0
     # Collect captures and promotions (avoid expensive board copies)
     captures = [m for m in state.legal_moves() if m.is_capture(state) or m.is_promotion()]
 
-    captures.sort(key=lambda m: (mvv_lva_score(state, m), simple_see_gain(state, m)), reverse=True)
+    # Use TT move for ordering if available
+    tt_move_q = tt_entry.best_move if tt_entry else None
+    
+    # Sort captures: TT move first, then MVV-LVA + SEE
+    def capture_score(move):
+        if tt_move_q and move == tt_move_q:
+            return (2, 0, 0)  # Highest priority
+        return (1, mvv_lva_score(state, move), simple_see_gain(state, move))
+    
+    captures.sort(key=capture_score, reverse=True)
 
     best_move_q = None
     for move in captures:
@@ -288,19 +297,46 @@ def negamax(state: bulletchess.Board, depth: int, alpha: float, beta: float, all
         score = 0
         if tt_move and move == tt_move:
             score += 1_000_000
-        if move.is_capture(state):
-            score += 100_000 + mvv_lva_score(state, move)
-        if move.is_promotion():
-            score += 80_000
-        # Enhanced killer scoring - differentiate primary and secondary killers
-        if ply in KILLER:
-            if len(KILLER[ply]) > 0 and move == KILLER[ply][0]:
-                score += 9_000  # Primary killer
-            elif len(KILLER[ply]) > 1 and move == KILLER[ply][1]:
-                score += 8_000  # Secondary killer
-        if is_pinned(state, move.origin) and not move.is_capture(state):
-            score -= 1_000  # Lighter penalty for pinned quiet moves
-        score += history_score(move)
+        
+        is_capture = move.is_capture(state)
+        is_promo = move.is_promotion()
+        
+        if is_capture:
+            mvv_lva = mvv_lva_score(state, move)
+            see = simple_see_gain(state, move)
+            
+            # Separate good captures (SEE >= 0) from bad captures (SEE < 0)
+            if see >= 0:
+                # Good captures: winning or equal trades
+                score += 100_000 + mvv_lva + see
+            else:
+                # Bad captures: losing trades - order AFTER all quiet moves
+                # Negative base ensures even small losses sort below quiet moves (score >= 0)
+                # Typical SEE for bad capture: -200 to -800
+                score += see  # Just use SEE directly - will be negative
+        
+        if is_promo:
+            # Promotions are very strong - higher than bad captures
+            # If it's also a capture, this adds to the capture score
+            if not is_capture:
+                score += 90_000  # Promotion-only (not capture)
+            else:
+                score += 80_000  # Promotion bonus on top of capture score
+        
+        # Killer moves and history only for non-captures
+        if not is_capture:
+            # Enhanced killer scoring - differentiate primary and secondary killers
+            if ply in KILLER:
+                if len(KILLER[ply]) > 0 and move == KILLER[ply][0]:
+                    score += 9_000  # Primary killer
+                elif len(KILLER[ply]) > 1 and move == KILLER[ply][1]:
+                    score += 8_000  # Secondary killer
+            
+            if is_pinned(state, move.origin):
+                score -= 1_000  # Lighter penalty for pinned quiet moves
+            
+            score += history_score(move)
+        
         scored.append((score, move))
     scored.sort(key=lambda x: x[0], reverse=True)
     ordered_moves = [m for _, m in scored]
