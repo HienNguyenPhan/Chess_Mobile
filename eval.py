@@ -4,11 +4,11 @@ import bulletchess.utils as utils
 
 # Constants
 MATERIAL = {
-    PAWN: 100,
-    KNIGHT: 320,
-    BISHOP: 330,
-    ROOK: 500,
-    QUEEN: 900,
+    PAWN: 84,
+    KNIGHT: 285,
+    BISHOP: 309,
+    ROOK: 508,
+    QUEEN: 898,
     KING: 0
 }
 
@@ -125,14 +125,14 @@ piece_square_tables = {
     },
     KING: {
         'opening': [
-            -30,-40,-40,-50,-50,-40,-40,-30,  # Rank 1 - king on back rank in opening
-            -40,-50,-50,-60,-60,-50,-50,-40,  # Rank 2 - PENALIZE king moving forward
-            -50,-60,-60,-70,-70,-60,-60,-50,  # Rank 3 - even worse
-            -60,-70,-70,-80,-80,-70,-70,-60,  # Rank 4 - terrible
-            -60,-70,-70,-80,-80,-70,-70,-60,  # Rank 5
-            -50,-60,-60,-70,-70,-60,-60,-50,  # Rank 6
-            -10,-20,-20,-20,-20,-20,-20,-10,  # Rank 7 - OK for castled position
-             10, 10,  0,  0,  0,  0, 10, 10   # Rank 8 - good on back rank with castling
+            -30,-40,-40,-50,-50,-40,-40,-30, 
+            -40,-50,-50,-60,-60,-50,-50,-40, 
+            -50,-60,-60,-70,-70,-60,-60,-50, 
+            -60,-70,-70,-80,-80,-70,-70,-60,  
+            -60,-70,-70,-80,-80,-70,-70,-60,
+            -50,-60,-60,-70,-70,-60,-60,-50, 
+            -10,-20,-20,-20,-20,-20,-20,-10, 
+             10, 10,  0,  0,  0,  0, 10, 10 
         ],
         'endgame': [
             -50,-40,-30,-20,-20,-30,-40,-50,
@@ -218,19 +218,19 @@ def king_safety(state: bulletchess.Board, color: bulletchess.Color, phase_weight
         else:
             shield_sqs = [king_sq.south(), king_sq.sw(), king_sq.se()]
         
-        shield = sum(10 for sq in shield_sqs if sq and state[color, PAWN] & sq.bb())
+        shield = sum(19 for sq in shield_sqs if sq and state[color, PAWN] & sq.bb())
         safety += int(shield * phase_weight)  # Scale with game phase
         
         # Penalty for king in center during opening/middlegame
         king_file = king_sq.index() % 8
         if king_file in [3, 4]:
-            safety -= int(20 * phase_weight)  # Only penalize in opening
+            safety -= int(41 * phase_weight)  # Only penalize in opening
         
         # Bonus for castled king - only in opening/middlegame
         king_rank = king_sq.index() // 8
         back_rank = 0 if color == WHITE else 7
         if king_rank == back_rank and king_file in [0, 1, 6, 7]:
-            safety += int(15 * phase_weight)
+            safety += int(20 * phase_weight)
     
     return sign * safety
 
@@ -239,7 +239,7 @@ def passed_pawn_bonus(board, phase_weight):
     bonus = 0
     
     # Endgame: passed pawns more valuable
-    base_value = 20 if phase_weight < 0.5 else 40
+    base_value = 20 if phase_weight < 0.5 else 37
     
     white_pawns = board[WHITE, PAWN]
     black_pawns = board[BLACK, PAWN]
@@ -257,7 +257,7 @@ def passed_pawn_bonus(board, phase_weight):
             # In endgame, advanced pawns are MUCH more valuable
             if phase_weight > 0.5:  # Endgame
                 # Exponential scaling: 40, 80, 138, 208, 290, 382
-                bonus += base_value * (1 + advancement_multiplier ** 1.5)
+                bonus += base_value * (1 + advancement_multiplier ** 1.15)
             else:  # Opening/Middlegame
                 bonus += base_value * (1 + advancement_multiplier * 0.3)
     
@@ -269,7 +269,7 @@ def passed_pawn_bonus(board, phase_weight):
         if _is_passed_pawn(board, square_index, False):
             advancement_multiplier = max(0, 6 - rank)  # Inverted for black (0 to 6)
             if phase_weight > 0.5:  # Endgame
-                bonus -= base_value * (1 + advancement_multiplier ** 1.5)
+                bonus -= base_value * (1 + advancement_multiplier ** 1.15)
             else:  # Opening/Middlegame
                 bonus -= base_value * (1 + advancement_multiplier * 0.3)
     
@@ -304,7 +304,7 @@ def _is_passed_pawn(board, square_index, is_white):
     return True
 
 def isolated_pawn_penalty(state: bulletchess.Board, phase_weight: float) -> float:
-    penalty = 15 if phase_weight > 0.5 else 10
+    penalty = 8 if phase_weight > 0.5 else 11
     return (count_bits(utils.isolated_pawns(state, WHITE)) - count_bits(utils.isolated_pawns(state, BLACK))) * -penalty
 
 def mop_up_eval(state: bulletchess.Board, phase_weight: float) -> float:
@@ -320,12 +320,12 @@ def mop_up_eval(state: bulletchess.Board, phase_weight: float) -> float:
     
     if white_material > black_material + 200:  # White winning
         distance = manhattan_distance(white_king, black_king)
-        score = (14 - distance) * 10  # Reward closer kings
+        score = (14 - distance) * 8  # Reward closer kings
         
         # Drive black king to edge
         black_file, black_rank = black_king.index() % 8, black_king.index() // 8
         black_edge_dist = min(black_file, 7 - black_file, black_rank, 7 - black_rank)
-        score += (3 - black_edge_dist) * 20
+        score += (3 - black_edge_dist) * 11
         return score * 3  # Increased weight from 1 to 3
         
     elif black_material > white_material + 200:  # Black winning
@@ -360,7 +360,7 @@ def piece_mobility(state: bulletchess.Board, color: bulletchess.Color) -> int:
         rank = sq.index() // 8
         back_rank = 0 if color == WHITE else 7
         if rank != back_rank:
-            mobility += 5  # Knight developed
+            mobility += 2  # Knight developed
     
     # Bishops off back rank
     bishops = state[color, BISHOP]
@@ -368,7 +368,7 @@ def piece_mobility(state: bulletchess.Board, color: bulletchess.Color) -> int:
         rank = sq.index() // 8
         back_rank = 0 if color == WHITE else 7
         if rank != back_rank:
-            mobility += 5  # Bishop developed
+            mobility += 2  # Bishop developed
     
     return sign * mobility
 
@@ -385,20 +385,20 @@ def piece_development(state: bulletchess.Board, phase_weight: float) -> int:
     # White development - penalize minor pieces on back rank (rank 0)
     for sq in state[WHITE, KNIGHT]:
         if sq.index() // 8 == 0:  # On rank 1 (index 0-7)
-            score -= 15
+            score -= 9
     
     for sq in state[WHITE, BISHOP]:
         if sq.index() // 8 == 0:
-            score -= 15
+            score -= 9
     
     # Black development - penalize minor pieces on back rank (rank 7)
     for sq in state[BLACK, KNIGHT]:
         if sq.index() // 8 == 7:  # On rank 8 (index 56-63)
-            score += 15  # Penalty for black
+            score += 9  # Penalty for black
     
     for sq in state[BLACK, BISHOP]:
         if sq.index() // 8 == 7:
-            score += 15
+            score += 9
     
     # Scale with phase
     return int(score * phase_weight)
@@ -457,9 +457,9 @@ def rook_on_open_file(state: bulletchess.Board, color: bulletchess.Color) -> int
                 break
         
         if not has_own_pawn and not has_enemy_pawn:
-            bonus += 20  # Open file
+            bonus += 35  # Open file
         elif not has_own_pawn and has_enemy_pawn:
-            bonus += 10  # Semi-open file
+            bonus += 20  # Semi-open file
     
     return sign * bonus
 
