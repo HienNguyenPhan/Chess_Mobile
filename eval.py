@@ -341,7 +341,7 @@ def mop_up_eval(state: bulletchess.Board, phase_weight: float) -> float:
     return 0
 
 def tempo(state: bulletchess.Board, phase_weight: float) -> int:
-    bonus = int(10 * phase_weight)
+    bonus = int(20 * (1 - phase_weight))
     return bonus if state.turn == WHITE else -bonus
 
 def piece_mobility(state: bulletchess.Board, color: bulletchess.Color) -> int:
@@ -467,6 +467,9 @@ def evaluate_position(state: bulletchess.Board) -> float:
     phase_weight = get_game_phase(state)
     # Core evaluation
     score = compute_pst_and_material(state, phase_weight)
+
+    # Tempo bonus
+    score += tempo(state, phase_weight)
     
     # King safety (only in opening/middlegame)
     score += king_safety(state, WHITE, phase_weight)
