@@ -362,7 +362,7 @@ def negamax(state: bulletchess.Board, depth: int, alpha: float, beta: float, all
 # -------------------------
 # Iterative deepening with root move ordering
 # -------------------------
-def get_best_move_and_eval(state: bulletchess.Board, time_limit: float = 3.0, max_depth: int = 20) -> Tuple[Optional[str], float]:
+def get_best_move_and_eval(state: bulletchess.Board, time_limit: float = 5.0, max_depth: int = 20) -> Tuple[Optional[str], float]:
     global nodes_searched, tt_hits
     nodes_searched = 0
     tt_hits = 0
