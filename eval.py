@@ -308,7 +308,8 @@ def isolated_pawn_penalty(state: bulletchess.Board, phase_weight: float) -> floa
     return (count_bits(utils.isolated_pawns(state, WHITE)) - count_bits(utils.isolated_pawns(state, BLACK))) * -penalty
 
 def mop_up_eval(state: bulletchess.Board, phase_weight: float) -> float:
-    if phase_weight <= 0.25:
+    # Only apply in endgame (phase > 0.5) when material advantage is LARGE (500+)
+    if phase_weight <= 0.5:
         return 0
     
     white_king = utils.king_square(state, WHITE)
@@ -318,25 +319,29 @@ def mop_up_eval(state: bulletchess.Board, phase_weight: float) -> float:
     white_material = sum(count_bits(state[WHITE, pt]) * MATERIAL[pt] for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN])
     black_material = sum(count_bits(state[BLACK, pt]) * MATERIAL[pt] for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN])
     
-    if white_material > black_material + 200:  # White winning
+    material_diff = white_material - black_material
+    
+    # Only apply mop-up when winning by a FULL PIECE or more (500+ material)
+    # 223 material difference is not enough to apply mop-up
+    if material_diff > 500:  # White winning by a lot
         distance = manhattan_distance(white_king, black_king)
-        score = (14 - distance) * 8  # Reward closer kings
+        score = (14 - distance) * 5  # Reward closer kings (reduced from 8)
         
         # Drive black king to edge
         black_file, black_rank = black_king.index() % 8, black_king.index() // 8
         black_edge_dist = min(black_file, 7 - black_file, black_rank, 7 - black_rank)
-        score += (3 - black_edge_dist) * 11
-        return score * 3  # Increased weight from 1 to 3
+        score += (3 - black_edge_dist) * 7  # Reduced from 11
+        return score  # Removed * 3 multiplier - was way too strong!
         
-    elif black_material > white_material + 200:  # Black winning
+    elif material_diff < -500:  # Black winning by a lot
         distance = manhattan_distance(white_king, black_king)
-        score = -(14 - distance) * 10
+        score = -(14 - distance) * 5  # Reduced from 10
         
         # Drive white king to edge
         white_file, white_rank = white_king.index() % 8, white_king.index() // 8
         white_edge_dist = min(white_file, 7 - white_file, white_rank, 7 - white_rank)
-        score -= (3 - white_edge_dist) * 20
-        return score * 3
+        score -= (3 - white_edge_dist) * 7  # Reduced from 20
+        return score  # Removed * 3 multiplier
     
     return 0
 

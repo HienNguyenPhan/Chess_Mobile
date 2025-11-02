@@ -143,8 +143,23 @@ def simple_see_gain(state: bulletchess.Board, move: bulletchess.Move) -> int:
 # Quiescence
 # -------------------------
 def quiescence(state: bulletchess.Board, alpha: float, beta: float, ply: int = 0) -> float:
-    global nodes_searched
+    global nodes_searched, tt_hits
     nodes_searched += 1
+
+    # Check TT first
+    zob = simple_hash(state)
+    tt_entry = transposition_table.get(zob)
+    if tt_entry is not None:
+        tt_hits += 1
+        # In quiescence, accept any depth since positions are evaluated statically
+        if tt_entry.flag == "EXACT":
+            return tt_entry.value
+        elif tt_entry.flag == "LOWER" and tt_entry.value >= beta:
+            return beta
+        elif tt_entry.flag == "UPPER" and tt_entry.value <= alpha:
+            return alpha
+
+    alpha_orig = alpha
 
     # Check terminal positions first
     if state in CHECKMATE:
@@ -154,11 +169,15 @@ def quiescence(state: bulletchess.Board, alpha: float, beta: float, ply: int = 0
 
     stand_pat = evaluate_position(state)
     if stand_pat >= beta:
+        # Store in TT before returning
+        store_tt_entry(zob, TTEntry(beta, 0, "LOWER", None))
         return beta
     
     # Delta pruning: if we can't reach alpha even with a queen capture
     BIG_DELTA = 975  # Queen value + margin
     if stand_pat < alpha - BIG_DELTA:
+        # Store in TT before returning
+        store_tt_entry(zob, TTEntry(alpha, 0, "UPPER", None))
         return alpha
     
     if alpha < stand_pat:
@@ -169,6 +188,7 @@ def quiescence(state: bulletchess.Board, alpha: float, beta: float, ply: int = 0
 
     captures.sort(key=lambda m: (mvv_lva_score(state, m), simple_see_gain(state, m)), reverse=True)
 
+    best_move_q = None
     for move in captures:
         # SEE pruning: only skip obviously bad captures (losing major piece for pawn)
         # Be conservative - simple_see_gain doesn't account for whether recapture exists
@@ -178,9 +198,20 @@ def quiescence(state: bulletchess.Board, alpha: float, beta: float, ply: int = 0
         score = -quiescence(state, -beta, -alpha, ply + 1)
         state.undo()
         if score >= beta:
+            # Store in TT before returning
+            store_tt_entry(zob, TTEntry(beta, 0, "LOWER", move))
             return beta
         if score > alpha:
             alpha = score
+            best_move_q = move
+    
+    # Store result in TT
+    if alpha <= alpha_orig:
+        flag = "UPPER"
+    else:
+        flag = "EXACT"
+    store_tt_entry(zob, TTEntry(alpha, 0, flag, best_move_q))
+    
     return alpha
 
 # -------------------------
@@ -202,16 +233,21 @@ def negamax(state: bulletchess.Board, depth: int, alpha: float, beta: float, all
     tt_entry = transposition_table.get(zob)
     alpha_orig = alpha
 
-    if tt_entry is not None and tt_entry.depth >= depth:
+    # Use TT entry if available
+    if tt_entry is not None:
+        # Count as hit whenever we find an entry (for statistics)
         tt_hits += 1
-        if tt_entry.flag == "EXACT":
-            return tt_entry.value, False
-        elif tt_entry.flag == "LOWER":
-            alpha = max(alpha, tt_entry.value)
-        elif tt_entry.flag == "UPPER":
-            beta = min(beta, tt_entry.value)
-        if alpha >= beta:
-            return tt_entry.value, False
+        # Only trust the score if the entry is from equal or deeper search
+        if tt_entry.depth >= depth:
+            if tt_entry.flag == "EXACT":
+                return tt_entry.value, False
+            elif tt_entry.flag == "LOWER":
+                alpha = max(alpha, tt_entry.value)
+            elif tt_entry.flag == "UPPER":
+                beta = min(beta, tt_entry.value)
+            if alpha >= beta:
+                return tt_entry.value, False
+        # Even if depth is insufficient, we can use the best_move for ordering (see below)
 
     if depth <= 0 or state in CHECKMATE or state in DRAW:
         return quiescence(state, alpha, beta, ply), False
