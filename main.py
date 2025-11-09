@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import bulletchess
-from bulletchess import CHECKMATE, DRAW, CHECK
+from bulletchess import CHECKMATE, DRAW, CHECK, INSUFFICIENT_MATERIAL, FIFTY_MOVE_TIMEOUT, THREEFOLD_REPETITION
 from chess_engine import get_best_move_and_eval
 from engine_state import (
     apply_move, get_or_create_board, reset_board, sessions,
@@ -77,11 +77,11 @@ def check_game_status(board: bulletchess.Board, session_id: str) -> Dict[str, An
         # Determine specific draw reason
         if not list(board.legal_moves()):
             status["reason"] = "stalemate"
-        elif board.is_insufficient_material():
+        elif board in INSUFFICIENT_MATERIAL:
             status["reason"] = "insufficient_material"
-        elif board.can_claim_fifty_move_rule():
+        elif board in FIFTY_MOVE_TIMEOUT:
             status["reason"] = "fifty_move_rule"
-        elif board.can_claim_threefold_repetition():
+        elif board in THREEFOLD_REPETITION:
             status["reason"] = "threefold_repetition"
         else:
             status["reason"] = "draw"
